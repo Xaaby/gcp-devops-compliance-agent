@@ -1,0 +1,35 @@
+# Local development only — not used in production
+# Usage:
+#   1. cp .env.example .env and fill in GEMINI_API_KEY
+#   2. cd backend/data && python generate_logs.py
+#   3. cd ../.. && docker-compose up --build
+#   4. Frontend: http://localhost:8501
+#   5. Backend:  http://localhost:8000/health
+
+version: "3.9"
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8080"
+    env_file:
+      - .env
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: streamlit.Dockerfile
+    ports:
+      - "8501:8080"
+    environment:
+      - BACKEND_URL=http://backend:8080
+    depends_on:
+      - backend

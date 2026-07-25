@@ -133,7 +133,7 @@ def _baseline_row(ts: datetime, service: str, index: int) -> tuple:
 
 
 def _anomaly_rows(now: datetime) -> list[tuple]:
-    """Returns the 3 pre-defined anomaly rows injected at NOW - 2 hours.
+    """Returns the 3 pre-defined anomaly rows injected at NOW - 5 hours.
 
     Args:
         now: Current UTC datetime used to compute the anomaly timestamp.
@@ -141,7 +141,7 @@ def _anomaly_rows(now: datetime) -> list[tuple]:
     Returns:
         List of 3 INSERT-ready tuples for the injected anomalies.
     """
-    ts = (now - timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%S")
+    ts = (now - timedelta(hours=5)).strftime("%Y-%m-%dT%H:%M:%S")
     return [
         (
             ts,

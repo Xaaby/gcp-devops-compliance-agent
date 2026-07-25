@@ -1,0 +1,136 @@
+name: Deploy to GCP Cloud Run
+
+on:
+  push:
+    branches: [main]
+
+env:
+  PROJECT_ID: earnest-sight-503519-t5
+  REGION: us-central1
+  BACKEND_IMAGE: us-central1-docker.pkg.dev/earnest-sight-503519-t5/gcp-devops-agent/backend
+  FRONTEND_IMAGE: us-central1-docker.pkg.dev/earnest-sight-503519-t5/gcp-devops-agent/frontend
+  BACKEND_SERVICE: gcp-devops-backend
+  FRONTEND_SERVICE: gcp-devops-frontend
+
+jobs:
+  deploy-backend:
+    name: Deploy Backend to Cloud Run
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Authenticate to GCP via Workload Identity Federation
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+
+      - name: Set up gcloud CLI
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
+
+      - name: Generate SQLite database
+        run: |
+          pip install -q pip --upgrade
+          cd backend/data && python generate_logs.py
+
+      - name: Build and push backend image
+        run: |
+          docker build -t ${{ env.BACKEND_IMAGE }}:${{ github.sha }} \
+                       -t ${{ env.BACKEND_IMAGE }}:latest \
+                       ./backend
+          docker push ${{ env.BACKEND_IMAGE }}:${{ github.sha }}
+          docker push ${{ env.BACKEND_IMAGE }}:latest
+
+      - name: Deploy backend to Cloud Run
+        id: deploy-backend
+        run: |
+          gcloud run deploy ${{ env.BACKEND_SERVICE }} \
+            --image=${{ env.BACKEND_IMAGE }}:${{ github.sha }} \
+            --region=${{ env.REGION }} \
+            --platform=managed \
+            --allow-unauthenticated \
+            --min-instances=0 \
+            --max-instances=3 \
+            --memory=512Mi \
+            --cpu=1 \
+            --port=8080 \
+            --service-account=gcp-devops-agent-sa@earnest-sight-503519-t5.iam.gserviceaccount.com \
+            --set-secrets=GEMINI_API_KEY=GEMINI_API_KEY:latest \
+            --project=${{ env.PROJECT_ID }}
+
+      - name: Get backend URL
+        id: backend-url
+        run: |
+          URL=$(gcloud run services describe ${{ env.BACKEND_SERVICE }} \
+            --region=${{ env.REGION }} \
+            --project=${{ env.PROJECT_ID }} \
+            --format='value(status.url)')
+          echo "url=$URL" >> $GITHUB_OUTPUT
+          echo "Backend deployed at: $URL"
+
+    outputs:
+      backend_url: ${{ steps.backend-url.outputs.url }}
+
+  deploy-frontend:
+    name: Deploy Frontend to Cloud Run
+    runs-on: ubuntu-latest
+    needs: deploy-backend
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Authenticate to GCP via Workload Identity Federation
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+
+      - name: Set up gcloud CLI
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
+
+      - name: Build and push frontend image
+        run: |
+          docker build -t ${{ env.FRONTEND_IMAGE }}:${{ github.sha }} \
+                       -t ${{ env.FRONTEND_IMAGE }}:latest \
+                       -f ./frontend/streamlit.Dockerfile \
+                       ./frontend
+          docker push ${{ env.FRONTEND_IMAGE }}:${{ github.sha }}
+          docker push ${{ env.FRONTEND_IMAGE }}:latest
+
+      - name: Deploy frontend to Cloud Run
+        run: |
+          gcloud run deploy ${{ env.FRONTEND_SERVICE }} \
+            --image=${{ env.FRONTEND_IMAGE }}:${{ github.sha }} \
+            --region=${{ env.REGION }} \
+            --platform=managed \
+            --allow-unauthenticated \
+            --min-instances=0 \
+            --max-instances=3 \
+            --memory=256Mi \
+            --cpu=1 \
+            --port=8080 \
+            --set-env-vars=BACKEND_URL=${{ needs.deploy-backend.outputs.backend_url }} \
+            --project=${{ env.PROJECT_ID }}
+
+      - name: Get frontend URL
+        run: |
+          URL=$(gcloud run services describe ${{ env.FRONTEND_SERVICE }} \
+            --region=${{ env.REGION }} \
+            --project=${{ env.PROJECT_ID }} \
+            --format='value(status.url)')
+          echo "Frontend deployed at: $URL"

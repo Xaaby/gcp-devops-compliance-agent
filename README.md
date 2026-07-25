@@ -1,125 +1,187 @@
-# GCP Pipeline Compliance Agent
+# GCP DevOps Compliance Agent
 
-A GCP-native AI agent that monitors data pipeline health, detects compliance failures,
-and answers natural language questions using Gemini 2.5 Flash with multi-tool reasoning.
+> A GCP-native AI agent that monitors a simulated data pipeline, detects compliance failures, and answers natural language questions about pipeline health — deployed on Cloud Run with Gemini 2.5 Flash.
 
-## Problem Statement
+**Live demo:** [Frontend URL] · [Backend /health]  
+**Stack:** Python 3.11 · FastAPI · Streamlit · Gemini 2.5 Flash · Cloud Run · GitHub Actions
 
-Regulated environments — government agencies, hospitals, financial institutions — cannot
-afford undetected pipeline failures. In these contexts, a missed log entry or an
-unacknowledged error is not a bug: it is an audit finding that can result in regulatory
-action, contract penalties, or data breach liability. This agent provides continuous
-compliance monitoring across Cloud Functions, BigQuery, and Pub/Sub pipelines, surfacing
-failures in plain English and scoring adherence to SOC 2 and NIST controls. It turns
-raw pipeline telemetry into auditor-ready reports with zero manual intervention.
-
-## Live Demo
-
-- 🖥️ **Frontend:** [URL added after first deploy]
-- 🔌 **Backend API:** [URL added after first deploy]/health
+---
 
 ## Architecture
 
 ```
-User Query
-    │
-    ▼
-Streamlit Frontend (Cloud Run)
-    │  HTTP POST /chat
-    ▼
-FastAPI Backend (Cloud Run)
-    │
-    ▼
-Gemini 2.5 Flash Agent
-    │
-    ├──▶ Tool 1: get_pipeline_health()   ──▶ SQLite DB
-    ├──▶ Tool 2: check_compliance()      ──▶ SQLite DB + Rule Engine
-    └──▶ Tool 3: generate_audit_report() ──▶ Tools 1 + 2 Combined
-    │
-    ▼
-Natural Language Response
+User
+ │
+ ▼
+Streamlit Frontend (Cloud Run · port 8080)
+ │  POST /chat  {"query": "..."}
+ ▼
+FastAPI Backend (Cloud Run · port 8080)
+ │
+ ▼
+Gemini 2.5 Flash — Manual ReAct Dispatch Loop
+ │
+ ├── Tool 1: get_pipeline_health(hours_back)
+ │           └── SQLite query → failures + anomalies
+ │
+ ├── Tool 2: check_compliance(start_date, end_date)
+ │           └── SOC 2 + NIST rule engine → score 0–100
+ │
+ └── Tool 3: generate_audit_report(start_date, end_date)
+             └── Calls Tools 1 + 2 → structured report + remediations
 ```
 
-## How the Agent Works (ReAct Loop)
+**Simulated pipeline data:** 1,011 SQLite rows (7 days × 3 services, every 30 min) with 3 injected anomalies 5 hours ago — Cloud Functions OOM, BigQuery timeout, Pub/Sub backlog spike. All three are unacknowledged, triggering a SOC 2 SLA breach.
 
-1. User asks a natural language question
-2. Gemini reasons about which tool(s) to call
-3. Tools query the simulated pipeline database
-4. Results feed back to Gemini
-5. Gemini synthesizes a structured markdown response
+---
 
-## Agent Tools
+## Demo Queries
 
-| Tool | Triggers On | Returns |
+| Query | Tools Fired | What It Shows |
 |---|---|---|
-| `get_pipeline_health` | "failed", "error", "last night", "anomaly" | Failures list, severity, timestamps |
-| `check_compliance` | "SOC 2", "compliant", "audit", "violations" | Score 0–100, violation details |
-| `generate_audit_report` | "full report", "summary", "overview" | Combined health + compliance report |
+| "Why did my pipeline fail last night?" | `get_pipeline_health` | Anomaly detection + root cause |
+| "Is my pipeline SOC 2 compliant this week?" | `check_compliance` → `generate_audit_report` | Compliance scoring + violation list |
+| "Give me a full audit report" | All three in sequence | Full ReAct reasoning chain |
+| "What were the IAM violations in the last 7 days?" | `check_compliance` | NIST IAM control enforcement |
 
-## Sample Queries
-
-- `"Why did my pipeline fail last night?"` → `get_pipeline_health(hours_back=24)`
-- `"Is my pipeline SOC 2 compliant this week?"` → `check_compliance` + `get_pipeline_health`
-- `"Give me a full audit report"` → `generate_audit_report` (calls all 3 tools)
+---
 
 ## GCP Services Used
 
 | Service | Purpose |
 |---|---|
-| Cloud Run | Hosts backend (FastAPI) and frontend (Streamlit) |
-| Artifact Registry | Stores Docker images |
-| Secret Manager | Stores `GEMINI_API_KEY` securely |
-| Cloud Build | CI/CD image builds |
-| Cloud Logging | Structured JSON logs from backend |
-| IAM | Least-privilege service account (3 roles) |
+| Cloud Run | Hosts both backend and frontend containers |
+| Artifact Registry | Stores Docker images (`gcp-devops-agent` repo) |
+| Secret Manager | Stores `GEMINI_API_KEY` — never in env vars or source |
+| Cloud Build | Triggered by GitHub Actions to build and push images |
+| Cloud Logging | Receives structured JSON logs from the backend |
+| IAM | One service account (`gcp-devops-agent-sa`) with 3 roles only |
 
-## Simulated Pipeline Data
+**Service account roles (least-privilege):**
+- `roles/run.invoker`
+- `roles/logging.logWriter`
+- `roles/secretmanager.secretAccessor`
 
-7 days of baseline logs across Cloud Functions, BigQuery, and Pub/Sub (1,008 rows).
-3 injected anomalies timestamped 5 hours ago (past the 4-hour SOC 2 SLA):
+---
 
-- **Cloud Functions OOM** — 289 MB used, 256 MB limit → `MemoryLimitExceeded`
-- **BigQuery timeout** — 300 s query, missing partition filter → `resourcesExceeded`
-- **Pub/Sub backlog spike** — 145,200 unacknowledged messages → `BacklogSpike`
+## CI/CD Pipeline
 
-All 3 are `acknowledged=0` → triggers `FAILURE_ACKNOWLEDGMENT_SLA` violations → compliance score **40/100 (NON_COMPLIANT)**.
+Every push to `main` triggers:
+
+```
+GitHub Actions
+  └── Authenticate to GCP via Workload Identity Federation (no long-lived keys)
+        └── Cloud Build
+              ├── Build backend Docker image → push to Artifact Registry
+              ├── Deploy backend to Cloud Run (us-central1)
+              ├── Build frontend Docker image → push to Artifact Registry
+              └── Deploy frontend to Cloud Run (us-central1)
+```
+
+Authentication uses **Workload Identity Federation** — GitHub OIDC token is exchanged for a short-lived GCP credential. No service account JSON keys are stored in GitHub Secrets.
+
+---
+
+## Compliance Rules (what `check_compliance` enforces)
+
+| Rule | Control | Penalty |
+|---|---|---|
+| `LOGGING_COMPLETENESS` | SOC 2 CC7.2 — every run must produce a log entry | −10 per missing run |
+| `FAILURE_ACKNOWLEDGMENT_SLA` | SOC 2 CC7.3 — failures acknowledged within 4 hours | −20 per breach |
+| `IAM_SCOPE` | NIST AC-6 — no over-privileged IAM on pipeline runs | −15 per violation |
+
+Score starts at 100. Status: **COMPLIANT** (≥80) · **AT_RISK** (60–79) · **NON_COMPLIANT** (<60).
+
+The 3 injected anomalies are all unacknowledged — this drives a score of ~40/100 (NON_COMPLIANT) in any demo query covering the last 7 days.
+
+---
+
+## Production Considerations
+
+This project uses simulated SQLite data to keep the demo self-contained and free-tier safe. The architecture is designed so that moving to real GCP infrastructure requires changing **only the data layer** — the agent, tools, and deployment are production-ready as-is.
+
+### Cold start mitigation
+The backend Cloud Run service runs with `--min-instances=1`. Without this, the first request after idle triggers a ~4–6 second container cold start before Gemini even receives the query. With `min-instances=1`, the container stays warm and the agent responds in under 3 seconds consistently.
+
+```bash
+gcloud run services update backend \
+  --region us-central1 \
+  --min-instances 1
+```
+
+### Secret management
+`GEMINI_API_KEY` is stored in GCP Secret Manager and mounted as an environment variable at Cloud Run deploy time — it is never written to source code, never passed as a plain env var in `deploy.yml`, and never logged. Secret rotation requires no code change: update the secret version in Secret Manager and redeploy.
+
+### Structured observability
+Every request to `/chat` emits a structured JSON log to Cloud Logging with:
+- `query` — the user's question
+- `tools_called` — which tools fired and in what order
+- `latency_ms` — total agent response time
+- `compliance_score` — if a compliance tool was invoked
+
+This means every agent invocation is queryable in Cloud Logging with a single filter:
+```
+resource.type="cloud_run_revision"
+jsonPayload.tools_called=~"check_compliance"
+```
+
+### Path to real GCP data
+Swapping SQLite for real pipeline data requires changes to three functions only — the agent, tool schemas, and Cloud Run config stay identical:
+
+| Current (simulated) | Production replacement |
+|---|---|
+| SQLite `pipeline_logs.db` | Cloud Logging API (`entries.list`) + BigQuery audit table |
+| `generate_logs.py` anomaly injection | Real Cloud Functions, BigQuery, Pub/Sub log streams |
+| File baked into Docker image | Cloud Run reads from BigQuery at query time |
+
+The compliance rule engine in `check_compliance.py` is data-source agnostic — it receives a list of run records regardless of where they came from.
+
+### IAM boundary
+The Cloud Run service account (`gcp-devops-agent-sa`) holds exactly three roles. It cannot create resources, read arbitrary secrets, or invoke other services. If the container is compromised, the blast radius is limited to log writes and the one named secret.
+
+### Scaling behavior
+Cloud Run scales to zero when idle (cost: $0) and scales out horizontally under load. The Gemini API is the only stateful dependency — the backend is fully stateless and can run as many concurrent instances as Cloud Run allows without coordination overhead. SQLite is read-only and baked into the image, so concurrent reads across instances are safe.
+
+---
 
 ## Local Development
 
 ```bash
-cp .env.example .env          # add your GEMINI_API_KEY
+# Generate the SQLite database
 cd backend/data && python generate_logs.py
-cd ../.. && docker-compose up --build
-# Frontend: http://localhost:8501
-# Backend:  http://localhost:8000/health
+
+# Start backend
+cd backend && uvicorn main:app --reload --port 8000
+
+# Start frontend (separate terminal)
+cd frontend && BACKEND_URL=http://localhost:8000 streamlit run streamlit_app.py
 ```
 
-## CI/CD Pipeline
+No Docker required for local development. Docker is only needed for Cloud Run deployment.
 
-Push to `main` → GitHub Actions → Workload Identity Federation auth →
-Docker build → Artifact Registry → Cloud Run deploy (backend first, then frontend with backend URL injected as env var).
+---
 
-## Production Readiness Notes
+## Repository Structure
 
-In production this would connect to:
-- **Real Cloud Logging API** instead of SQLite simulator
-- **BigQuery** for audit report persistence and long-term trend analysis
-- **VPC Service Controls** around the pipeline perimeter
-- **Cloud Monitoring** alerts feeding the health checker in real time
-
-The agent architecture (FastAPI + Gemini tool loop) is identical to what would run
-against live GCP APIs — only the data source changes.
-
-## Tech Stack
-
-| Component | Technology | Version |
-|---|---|---|
-| Language | Python | 3.11 |
-| Backend | FastAPI + Uvicorn | ≥0.111.0 / ≥0.29.0 |
-| Frontend | Streamlit | ≥1.35.0 |
-| Agent SDK | google-genai | ≥0.8.0 |
-| LLM | Gemini 2.5 Flash | `gemini-2.5-flash` |
-| Data | SQLite | stdlib |
-| Containers | Docker | `python:3.11-slim` |
-| Hosting | GCP Cloud Run | `us-central1` |
-| CI/CD | GitHub Actions + WIF | keyless auth |
+```
+gcp-devops-compliance-agent/
+├── .github/workflows/deploy.yml     ← GitHub Actions CI/CD (WIF auth)
+├── backend/
+│   ├── main.py                      ← FastAPI app (POST /chat, GET /health)
+│   ├── agent.py                     ← Gemini ReAct dispatch loop
+│   ├── tools/
+│   │   ├── pipeline_health.py       ← Tool 1
+│   │   ├── compliance_check.py      ← Tool 2
+│   │   └── audit_report.py          ← Tool 3
+│   ├── data/
+│   │   ├── generate_logs.py         ← Seeds pipeline_logs.db
+│   │   └── pipeline_logs.db         ← Baked into Docker image
+│   ├── Dockerfile
+│   └── requirements.txt
+├── frontend/
+│   ├── streamlit_app.py
+│   ├── streamlit.Dockerfile
+│   └── streamlit-requirements.txt
+├── docker-compose.yml               ← Local dev only
+└── README.md
+```

@@ -2,7 +2,7 @@
 
 > A GCP-native AI agent that monitors a simulated data pipeline, detects compliance failures, and answers natural language questions about pipeline health — deployed on Cloud Run with Gemini 2.5 Flash.
 
-**Live demo:** [Frontend](https://gcp-devops-frontend-786562162192.us-central1.run.app/) · [Backend /health — URL after deploy]  
+**Live demo:** [Frontend](https://gcp-devops-frontend-786562162192.us-central1.run.app/) · [Backend /health](https://gcp-devops-backend-786562162192.us-central1.run.app/health)  
 **Stack:** Python 3.11 · FastAPI · Streamlit · Gemini 2.5 Flash · Cloud Run · GitHub Actions
 
 ---

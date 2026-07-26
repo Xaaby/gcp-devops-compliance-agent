@@ -107,13 +107,15 @@ st.divider()
 
 # ── Demo query buttons ────────────────────────────────────────────────────────
 
+if "query_value" not in st.session_state:
+    st.session_state.query_value = ""
+
 st.markdown("**Try a demo query:**")
 cols = st.columns(2)
-selected_demo: str | None = None
 
 for i, query in enumerate(DEMO_QUERIES):
     if cols[i % 2].button(query, use_container_width=True):
-        selected_demo = query
+        st.session_state.query_value = query
 
 st.divider()
 
@@ -121,7 +123,7 @@ st.divider()
 
 query_input = st.text_input(
     label="Ask the agent",
-    value=selected_demo or "",
+    key="query_value",
     placeholder="Ask about your pipeline...",
     label_visibility="collapsed",
 )
